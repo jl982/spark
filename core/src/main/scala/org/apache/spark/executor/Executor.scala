@@ -158,9 +158,15 @@ private[spark] class Executor(
 
       try {
         Accumulators.clear()
+        //println("XXX serializedTask size " + serializedTask.array().length)
+        val a = System.currentTimeMillis()
         val (taskFiles, taskJars, taskBytes) = Task.deserializeWithDependencies(serializedTask)
+        val b = System.currentTimeMillis()
         updateDependencies(taskFiles, taskJars)
+        //println("XXX taskBytes size " + taskBytes.array().length)
+        val c = System.currentTimeMillis()
         task = ser.deserialize[Task[Any]](taskBytes, Thread.currentThread.getContextClassLoader)
+        val d = System.currentTimeMillis()
 
         // If this task has been killed before we deserialized it, let's quit now. Otherwise,
         // continue executing the task.
@@ -178,6 +184,7 @@ private[spark] class Executor(
 
         // Run the actual task and measure its runtime.
         taskStart = System.currentTimeMillis()
+        println(s"XXX $startTime $a $b $c $d $taskStart")
         val value = task.run(taskId.toInt)
         val taskFinish = System.currentTimeMillis()
 
