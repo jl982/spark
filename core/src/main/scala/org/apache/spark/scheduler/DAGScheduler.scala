@@ -785,6 +785,8 @@ class DAGScheduler(
     }
   }
 
+  var taskBinaryBytesSet : scala.collection.mutable.Map[List[Byte], Broadcast[Array[Byte]]] = scala.collection.mutable.Map[List[Byte], Broadcast[Array[Byte]]]()
+
   /** Called when stage's parents are available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {
     logDebug("submitMissingTasks(" + stage + ")")
@@ -832,7 +834,18 @@ class DAGScheduler(
         } else {
           closureSerializer.serialize((stage.rdd, stage.resultOfJob.get.func) : AnyRef).array()
         }
-      taskBinary = sc.broadcast(taskBinaryBytes)
+
+      taskBinary = {
+        val taskBinaryBytesList = taskBinaryBytes.toList
+        taskBinaryBytesSet.get(taskBinaryBytesList) match {
+          case None =>
+            val taskBinaryBytesBroadcast = sc.broadcast(taskBinaryBytes)
+            taskBinaryBytesSet += (taskBinaryBytesList -> taskBinaryBytesBroadcast)
+            taskBinaryBytesBroadcast
+          case Some(cachedTaskBinary) =>
+            cachedTaskBinary
+        }
+      }
     } catch {
       // In the case of a failure during serialization, abort the stage.
       case e: NotSerializableException =>
