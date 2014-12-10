@@ -19,6 +19,7 @@ package org.apache.spark.streaming.scheduler
 
 import scala.util.{Failure, Success, Try}
 import scala.collection.JavaConversions._
+import java.io._
 import java.util.concurrent.{TimeUnit, ConcurrentHashMap, Executors}
 import akka.actor.{ActorRef, Actor, Props}
 import org.apache.spark.{SparkException, Logging, SparkEnv}
@@ -37,6 +38,7 @@ private[scheduler] case class ErrorReported(msg: String, e: Throwable) extends J
 private[streaming]
 class JobScheduler(val ssc: StreamingContext) extends Logging {
 
+  val out = new BufferedWriter(new PrintWriter(new FileWriter(new File("/data/jianneng/zjs.txt"), false)))
   private val jobSets = new ConcurrentHashMap[Time, JobSet]
   private val numConcurrentJobs = ssc.conf.getInt("spark.streaming.concurrentJobs", 1)
   private val jobExecutor = Executors.newFixedThreadPool(numConcurrentJobs)
@@ -100,10 +102,29 @@ class JobScheduler(val ssc: StreamingContext) extends Logging {
     logInfo("Stopped JobScheduler")
   }
 
+  var counter = 0
   def submitJobSet(jobSet: JobSet) {
     if (jobSet.jobs.isEmpty) {
       logInfo("No jobs added for time " + jobSet.time)
     } else {
+      val now = System.currentTimeMillis
+      val timeBlockSeq = jobSet.receivedBlockInfo
+      var firstRecord = ""
+      if (timeBlockSeq.size > 0) {
+        if (timeBlockSeq.head._2.size > 0) {
+          firstRecord = timeBlockSeq.head._2.head.firstRecord
+        } else {
+          logInfo("1 timeBlockSeq.head._2.size " + timeBlockSeq.head._2.size + " 999 999")
+        }
+      } else {
+        logInfo("1 timeBlockSeq.size " + timeBlockSeq.size + " 999 999")
+      }
+      if (firstRecord != "") out.append(s"$firstRecord $now\n")
+      counter += 1
+      if (counter % 10 == 0) {
+        out.flush()
+      }
+
       jobSets.put(jobSet.time, jobSet)
       jobSet.jobs.foreach(job => jobExecutor.execute(new JobHandler(job)))
       logInfo("Added jobs for time " + jobSet.time)

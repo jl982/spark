@@ -71,9 +71,20 @@ class SocketReceiver[T: ClassTag](
       socket = new Socket(host, port)
       logInfo("Connected to " + host + ":" + port)
       val iterator = bytesToObjects(socket.getInputStream())
+      val out = new BufferedWriter(new PrintWriter(new FileWriter(new File("/data/jianneng/zsids.txt"), false)))
+      var counter = 0
       while(!isStopped && iterator.hasNext) {
-        store(iterator.next)
+        val now = System.currentTimeMillis
+        val value = iterator.next
+        counter += 1
+        out.append(s"$value $now\n")
+        if (counter % 10000 == 0) {
+          out.flush()
+        }
+
+        store(value)
       }
+      out.close()
       logInfo("Stopped receiving")
       restart("Retrying connecting to " + host + ":" + port)
     } catch {

@@ -17,6 +17,8 @@
 
 package org.apache.spark.streaming.scheduler
 
+import java.io._
+
 import scala.collection.mutable.{HashMap, SynchronizedMap, SynchronizedQueue}
 import scala.language.existentials
 
@@ -33,7 +35,8 @@ private[streaming] case class ReceivedBlockInfo(
     streamId: Int,
     blockId: StreamBlockId,
     numRecords: Long,
-    metadata: Any
+    metadata: Any,
+    firstRecord: String = ""
   )
 
 /**
@@ -61,6 +64,7 @@ private[streaming] case class DeregisterReceiver(streamId: Int, msg: String, err
 private[streaming]
 class ReceiverTracker(ssc: StreamingContext) extends Logging {
 
+  val out = new BufferedWriter(new PrintWriter(new FileWriter(new File("/data/jianneng/zrt.txt"), false)))
   val receiverInputStreams = ssc.graph.getReceiverInputStreams()
   val receiverInputStreamMap = Map(receiverInputStreams.map(x => (x.id, x)): _*)
   val receiverExecutor = new ReceiverLauncher()
@@ -149,9 +153,19 @@ class ReceiverTracker(ssc: StreamingContext) extends Logging {
     logError(s"Deregistered receiver for stream $streamId: $messageWithError")
   }
 
+  var counter = 0
   /** Add new blocks for the given stream */
   def addBlocks(receivedBlockInfo: ReceivedBlockInfo) {
     getReceivedBlockInfoQueue(receivedBlockInfo.streamId) += receivedBlockInfo
+
+    val record = receivedBlockInfo.firstRecord
+    val now = System.currentTimeMillis
+    out.append(s"$record $now\n")
+    counter += 1
+    if (counter % 100 == 0) {
+      out.flush()
+    }
+
     logDebug("Stream " + receivedBlockInfo.streamId + " received new blocks: " +
       receivedBlockInfo.blockId)
   }

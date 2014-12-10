@@ -93,7 +93,8 @@ private[streaming] class BlockGenerator(
       if (newBlockBuffer.size > 0) {
         val blockId = StreamBlockId(receiverId, time - blockInterval)
         val newBlock = new Block(blockId, newBlockBuffer)
-        blocksForPushing.put(newBlock)  // put is blocking when queue is full
+        val taken = blocksForPushing.offer(newBlock)  // put is blocking when queue is full
+        if (!taken) logInfo("dropped 9 9")
         logDebug("Last element in " + blockId + " is " + newBlockBuffer.last)
       }
     } catch {
