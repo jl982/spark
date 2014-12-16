@@ -28,7 +28,8 @@ import akka.pattern.ask
 
 import com.google.common.base.Throwables
 
-import org.apache.spark.{Logging, SparkEnv}
+import org.apache.spark.{Logging, SparkEnv, SparkConf}
+import org.apache.spark.serializer.KryoSerializer
 import org.apache.spark.streaming.scheduler._
 import org.apache.spark.util.{Utils, AkkaUtils}
 import org.apache.spark.storage.StreamBlockId
@@ -139,6 +140,8 @@ private[streaming] class ReceiverSupervisorImpl(
     reportPushedBlock(blockId, -1, optionalMetadata)
   }
 
+  val ser = new KryoSerializer(new SparkConf()).newInstance()
+
   /** Store the bytes of received data as a data block into Spark's memory. */
   def pushBytes(
       bytes: ByteBuffer,
@@ -149,7 +152,11 @@ private[streaming] class ReceiverSupervisorImpl(
     val time = System.currentTimeMillis
     blockManager.putBytes(blockId, bytes, storageLevel, tellMaster = true)
     logDebug("Pushed block " + blockId + " in " + (System.currentTimeMillis - time)  + " ms")
-    reportPushedBlock(blockId, -1, optionalMetadata)
+
+    val firstRecord = ser.deserialize[String](bytes).stripLineEnd
+    val blockInfo = ReceivedBlockInfo(streamId, blockId, -1, optionalMetadata.orNull, firstRecord)
+    trackerActor ! AddBlock(blockInfo)
+    //reportPushedBlock(blockId, -1, optionalMetadata)
   }
 
   /** Report pushed block */
