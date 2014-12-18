@@ -55,6 +55,7 @@ private[streaming] class BlockGenerator(
   private val blockQueueSize = conf.getInt("spark.streaming.blockQueueSize", 10)
   private val blocksForPushing = new ArrayBlockingQueue[Block](blockQueueSize)
   private val blockPushingThread = new Thread() { override def run() { keepPushingBlocks() } }
+  private val blockPushingThread2 = new Thread() { override def run() { keepPushingBlocks() } }
 
   @volatile private var currentBuffer = new ArrayBuffer[Any]
   @volatile private var stopped = false
@@ -63,6 +64,7 @@ private[streaming] class BlockGenerator(
   def start() {
     blockIntervalTimer.start()
     blockPushingThread.start()
+    blockPushingThread2.start()
     logInfo("Started BlockGenerator")
   }
 

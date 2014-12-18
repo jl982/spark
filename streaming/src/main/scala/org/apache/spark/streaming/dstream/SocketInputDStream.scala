@@ -77,8 +77,8 @@ class SocketReceiver[T: ClassTag](
         val now = System.currentTimeMillis
         val value = iterator.next
         counter += 1
-        out.append(s"$value $now\n")
-        if (counter % 10000 == 0) {
+        if (counter % 100 == 0) out.append(s"$value $now\n")
+        if (counter % 100000 == 0) {
           out.flush()
         }
 

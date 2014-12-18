@@ -184,7 +184,7 @@ private[spark] class Executor(
 
         // Run the actual task and measure its runtime.
         taskStart = System.currentTimeMillis()
-        println(s"XXX $startTime $a $b $c $d $taskStart")
+        //print(s"XXX $startTime $a $b $c $d $taskStart\n")
         val value = task.run(taskId.toInt)
         val taskFinish = System.currentTimeMillis()
 

@@ -17,6 +17,7 @@
 
 package org.apache.spark.streaming.receiver
 
+import java.io._
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
@@ -103,6 +104,9 @@ private[streaming] class ReceiverSupervisorImpl(
     blockGenerator += (data)
   }
 
+  val out = new BufferedWriter(new PrintWriter(new FileWriter(new File("/data/jianneng/zrsi.txt"), false)))
+  var counter = 0
+
   /** Store an ArrayBuffer of received data as a data block into Spark's memory. */
   def pushArrayBuffer(
       arrayBuffer: ArrayBuffer[_],
@@ -119,6 +123,12 @@ private[streaming] class ReceiverSupervisorImpl(
       case array:ArrayBuffer[String] => {
         val record = array.head;
         firstRecord = record
+        counter += 1
+        val now = System.currentTimeMillis
+        out.append(s"$firstRecord $now\n")
+        if (counter % 100 == 0) {
+          out.flush()
+        }
       }
     }
 
