@@ -29,6 +29,7 @@ import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.tree.configuration.Strategy
 import org.apache.spark.mllib.tree.configuration.Algo._
 import org.apache.spark.mllib.tree.configuration.QuantileStrategy._
+import org.apache.spark.mllib.tree.configuration.FeatureType._
 import org.apache.spark.mllib.tree.impl.{BaggedPoint, DecisionTreeMetadata, NodeIdCache,
   TimeTracker, TreePoint}
 import org.apache.spark.mllib.tree.impurity.Impurities
@@ -127,6 +128,7 @@ private class RandomForest (
    */
   def run(input: RDD[LabeledPoint]): RandomForestModel = {
 
+
     val timer = new TimeTracker()
 
     timer.start("total")
@@ -154,11 +156,36 @@ private class RandomForest (
         s"\t$featureIndex\t${metadata.numBins(featureIndex)}"
       }.mkString("\n"))
 
+    println("numBins: feature: number of bins")
+    println(Range(0, metadata.numFeatures).map { featureIndex =>
+      s"\t$featureIndex\t${metadata.numBins(featureIndex)}"
+    }.mkString("\n"))
+
+    //find Min and Max values of each feature for Extra Trees
+    timer.start("findMinsAndMaxes")
+    val (mins,maxes) = if(metadata.extra){
+      DecisionTree.findMinsAndMaxes(retaggedInput,metadata)
+    }else{
+      (None,None)
+    }
+    if(metadata.extra) {
+      /*
+      for(i <- 0 until metadata.numFeatures){
+        metadata.setNumSplits(i,1)
+      }
+      */
+      println("PRINTING MINS AND MAXES AAAAAAAAAAAA")
+      println(println(mins.get.deep.mkString("\n")))
+      println(println(maxes.get.deep.mkString("\n")))
+    }
+
+    timer.stop("findMinsAndMaxes")
+
     // Bin feature values (TreePoint representation).
     // Cache input RDD for speedup during multiple passes.
     val treeInput = TreePoint.convertToTreeRDD(retaggedInput, bins, metadata)
 
-    val withReplacement = if (numTrees > 1) true else false
+    val withReplacement = if (metadata.extra || numTrees == 1) false else true
 
     val baggedInput
       = BaggedPoint.convertToBaggedRDD(treeInput,
@@ -167,8 +194,8 @@ private class RandomForest (
 
     // depth of the decision tree
     val maxDepth = strategy.maxDepth
-    require(maxDepth <= 30,
-      s"DecisionTree currently only supports maxDepth <= 30, but was given maxDepth = $maxDepth.")
+    //require(maxDepth <= 30,
+     // s"DecisionTree currently only supports maxDepth <= 30, but was given maxDepth = $maxDepth.")
 
     // Max memory usage for aggregates
     // TODO: Calculate memory usage more precisely.
@@ -224,7 +251,7 @@ private class RandomForest (
       // Collect some nodes to split, and choose features for each node (if subsampling).
       // Each group of nodes may come from one or multiple trees, and at multiple levels.
       val (nodesForGroup, treeToNodeToIndexInfo) =
-        RandomForest.selectNodesToSplit(nodeQueue, maxMemoryUsage, metadata, rng)
+        RandomForest.selectNodesToSplit(nodeQueue, maxMemoryUsage, metadata, rng,mins,maxes)
       // Sanity check (should never occur):
       assert(nodesForGroup.size > 0,
         s"RandomForest selected empty nodesForGroup.  Error for unknown reason.")
@@ -242,6 +269,7 @@ private class RandomForest (
 
     logInfo("Internal timing for DecisionTree:")
     logInfo(s"$timer")
+    println(s"PRINTING TIMER $timer")
 
     // Delete any remaining checkpoints used for node Id cache.
     if (nodeIdCache.nonEmpty) {
@@ -326,6 +354,22 @@ object RandomForest extends Serializable with Logging {
     val impurityType = Impurities.fromString(impurity)
     val strategy = new Strategy(Classification, impurityType, maxDepth,
       numClasses, maxBins, Sort, categoricalFeaturesInfo)
+    trainClassifier(input, strategy, numTrees, featureSubsetStrategy, seed)
+  }
+
+  def trainExtraClassifier(
+                       input: RDD[LabeledPoint],
+                       numClasses: Int,
+                       categoricalFeaturesInfo: Map[Int, Int],
+                       numTrees: Int,
+                       featureSubsetStrategy: String,
+                       impurity: String,
+                       maxDepth: Int,
+                       maxBins: Int,
+                       seed: Int = Utils.random.nextInt()): RandomForestModel = {
+    val impurityType = Impurities.fromString(impurity)
+    val strategy = new Strategy(Classification, impurityType, maxDepth,
+      numClasses, 2, Sort, categoricalFeaturesInfo,extra = true)
     trainClassifier(input, strategy, numTrees, featureSubsetStrategy, seed)
   }
 
@@ -438,7 +482,8 @@ object RandomForest extends Serializable with Logging {
 
   private[tree] class NodeIndexInfo(
       val nodeIndexInGroup: Int,
-      val featureSubset: Option[Array[Int]]) extends Serializable
+      val featureSubset: Option[Array[Int]],
+      val splits: Option[Array[Split]] = None) extends Serializable
 
   /**
    * Pull nodes off of the queue, and collect a group of nodes to be split on this iteration.
@@ -461,7 +506,9 @@ object RandomForest extends Serializable with Logging {
       nodeQueue: mutable.Queue[(Int, Node)],
       maxMemoryUsage: Long,
       metadata: DecisionTreeMetadata,
-      rng: scala.util.Random): (Map[Int, Array[Node]], Map[Int, Map[Int, NodeIndexInfo]]) = {
+      rng: scala.util.Random,
+      mins: Option[Array[Double]] = None,
+      maxes: Option[Array[Double]] = None): (Map[Int, Array[Node]], Map[Int, Map[Int, NodeIndexInfo]]) = {
     // Collect some nodes to split:
     //  nodesForGroup(treeIndex) = nodes to split
     val mutableNodesForGroup = new mutable.HashMap[Int, mutable.ArrayBuffer[Node]]()
@@ -484,9 +531,26 @@ object RandomForest extends Serializable with Logging {
       if (memUsage + nodeMemUsage <= maxMemoryUsage) {
         nodeQueue.dequeue()
         mutableNodesForGroup.getOrElseUpdate(treeIndex, new mutable.ArrayBuffer[Node]()) += node
+
+
+        val splits = if (!metadata.extra) {
+          None
+        } else {
+          Some(new Array[Split](featureSubset.get.length))
+        }
+        if (metadata.extra) {
+          for (i <- 0 until featureSubset.get.length) {
+            val featureIndex = featureSubset.get(i)
+            if (!metadata.isCategorical(featureIndex)) {
+              val min = mins.get(featureIndex)
+              val max = maxes.get(featureIndex)
+              splits.get(i) = new Split(featureIndex, min + (rng.nextDouble()*(max - min)), Continuous, List())
+            }
+          }
+        }
         mutableTreeToNodeToIndexInfo
           .getOrElseUpdate(treeIndex, new mutable.HashMap[Int, NodeIndexInfo]())(node.id)
-          = new NodeIndexInfo(numNodesInGroup, featureSubset)
+          = new NodeIndexInfo(numNodesInGroup, featureSubset,splits)
       }
       numNodesInGroup += 1
       memUsage += nodeMemUsage

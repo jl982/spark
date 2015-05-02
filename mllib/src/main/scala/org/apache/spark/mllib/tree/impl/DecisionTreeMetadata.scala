@@ -51,7 +51,8 @@ private[tree] class DecisionTreeMetadata(
     val minInstancesPerNode: Int,
     val minInfoGain: Double,
     val numTrees: Int,
-    val numFeaturesPerNode: Int) extends Serializable {
+    val numFeaturesPerNode: Int,
+    val extra: Boolean = false) extends Serializable {
 
   def isUnordered(featureIndex: Int): Boolean = unorderedFeatures.contains(featureIndex)
 
@@ -101,6 +102,8 @@ private[tree] object DecisionTreeMetadata extends Logging {
    * This computes which categorical features will be ordered vs. unordered,
    * as well as the number of splits and bins for each feature.
    */
+
+
   def buildMetadata(
       input: RDD[LabeledPoint],
       strategy: Strategy,
@@ -176,10 +179,12 @@ private[tree] object DecisionTreeMetadata extends Logging {
       case "onethird" => (numFeatures / 3.0).ceil.toInt
     }
 
+    val extra = strategy.extra
+
     new DecisionTreeMetadata(numFeatures, numExamples, numClasses, numBins.max,
       strategy.categoricalFeaturesInfo, unorderedFeatures.toSet, numBins,
       strategy.impurity, strategy.quantileCalculationStrategy, strategy.maxDepth,
-      strategy.minInstancesPerNode, strategy.minInfoGain, numTrees, numFeaturesPerNode)
+      strategy.minInstancesPerNode, strategy.minInfoGain, numTrees, numFeaturesPerNode,extra)
   }
 
   /**

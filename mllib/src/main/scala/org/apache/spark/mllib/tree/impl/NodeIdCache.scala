@@ -43,11 +43,15 @@ private[tree] case class NodeIndexUpdater(
    * @param bins Bin information to convert the bin indices to approximate feature values.
    * @return Child node index to update to.
    */
-  def updateNodeIndex(binnedFeatures: Array[Int], bins: Array[Array[Bin]]): Int = {
+  def updateNodeIndex(binnedFeatures: Array[Int], bins: Array[Array[Bin]], treePoint: TreePoint, metadata: DecisionTreeMetadata): Int = {
     if (split.featureType == Continuous) {
       val featureIndex = split.feature
       val binIndex = binnedFeatures(featureIndex)
-      val featureValueUpperBound = bins(featureIndex)(binIndex).highSplit.threshold
+      val featureValueUpperBound = if(metadata.extra){
+        treePoint.features(featureIndex)
+      }else{
+        bins(featureIndex)(binIndex).highSplit.threshold
+      }
       if (featureValueUpperBound <= split.threshold) {
         Node.leftChildIndex(nodeIndex)
       } else {
@@ -100,7 +104,7 @@ private[tree] class NodeIdCache(
   def updateNodeIndices(
       data: RDD[BaggedPoint[TreePoint]],
       nodeIdUpdaters: Array[mutable.Map[Int, NodeIndexUpdater]],
-      bins: Array[Array[Bin]]): Unit = {
+      bins: Array[Array[Bin]], metadata: DecisionTreeMetadata): Unit = {
     if (prevNodeIdsForInstances != null) {
       // Unpersist the previous one if one exists.
       prevNodeIdsForInstances.unpersist()
@@ -115,7 +119,7 @@ private[tree] class NodeIdCache(
           if (nodeIdUpdater != null) {
             val newNodeIndex = nodeIdUpdater.updateNodeIndex(
               binnedFeatures = dataPoint._1.datum.binnedFeatures,
-              bins = bins)
+              bins = bins, dataPoint._1.datum,metadata)
             dataPoint._2(treeId) = newNodeIndex
           }
 

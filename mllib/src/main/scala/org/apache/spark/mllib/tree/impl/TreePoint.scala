@@ -20,6 +20,7 @@ package org.apache.spark.mllib.tree.impl
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.tree.model.Bin
 import org.apache.spark.rdd.RDD
+import org.apache.spark.mllib.linalg.Vector
 
 
 /**
@@ -37,7 +38,7 @@ import org.apache.spark.rdd.RDD
  * @param binnedFeatures  Binned feature values.
  *                        Same length as LabeledPoint.features, but values are bin indices.
  */
-private[tree] class TreePoint(val label: Double, val binnedFeatures: Array[Int])
+private[tree] class TreePoint(val label: Double, val binnedFeatures: Array[Int], val features: Vector)
   extends Serializable {
 }
 
@@ -65,7 +66,7 @@ private[tree] object TreePoint {
       featureIndex += 1
     }
     input.map { x =>
-      TreePoint.labeledPointToTreePoint(x, bins, featureArity, isUnordered)
+      TreePoint.labeledPointToTreePoint(x, bins, featureArity, isUnordered, metadata)
     }
   }
 
@@ -80,7 +81,8 @@ private[tree] object TreePoint {
       labeledPoint: LabeledPoint,
       bins: Array[Array[Bin]],
       featureArity: Array[Int],
-      isUnordered: Array[Boolean]): TreePoint = {
+      isUnordered: Array[Boolean],
+      metadata:DecisionTreeMetadata): TreePoint = {
     val numFeatures = labeledPoint.features.size
     val arr = new Array[Int](numFeatures)
     var featureIndex = 0
@@ -89,7 +91,12 @@ private[tree] object TreePoint {
         isUnordered(featureIndex), bins)
       featureIndex += 1
     }
-    new TreePoint(labeledPoint.label, arr)
+    if(metadata.extra) {
+      return new TreePoint(labeledPoint.label, arr,labeledPoint.features)
+    }
+    else{
+      return new TreePoint(labeledPoint.label, arr, null)
+    }
   }
 
   /**
