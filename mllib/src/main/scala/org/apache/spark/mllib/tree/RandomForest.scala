@@ -149,10 +149,12 @@ private class RandomForest (
     timer.start("findSplitsBins")
     val (splits, bins) = DecisionTree.findSplitsBins(retaggedInput, metadata)
     timer.stop("findSplitsBins")
+    logInfo(s"zzzzzzzz $timer")
     logDebug("numBins: feature: number of bins")
     logDebug(Range(0, metadata.numFeatures).map { featureIndex =>
         s"\t$featureIndex\t${metadata.numBins(featureIndex)}"
       }.mkString("\n"))
+    System.exit(0)
 
     // Bin feature values (TreePoint representation).
     // Cache input RDD for speedup during multiple passes.

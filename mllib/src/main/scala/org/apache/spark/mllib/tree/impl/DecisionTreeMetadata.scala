@@ -51,7 +51,8 @@ private[tree] class DecisionTreeMetadata(
     val minInstancesPerNode: Int,
     val minInfoGain: Double,
     val numTrees: Int,
-    val numFeaturesPerNode: Int) extends Serializable {
+    val numFeaturesPerNode: Int,
+    val isOrigin:Int) extends Serializable {
 
   def isUnordered(featureIndex: Int): Boolean = unorderedFeatures.contains(featureIndex)
 
@@ -107,6 +108,7 @@ private[tree] object DecisionTreeMetadata extends Logging {
       numTrees: Int,
       featureSubsetStrategy: String): DecisionTreeMetadata = {
 
+    val isOrigin = strategy.isOrigin
     val numFeatures = input.take(1)(0).features.size
     val numExamples = input.count()
     val numClasses = strategy.algo match {
@@ -179,7 +181,7 @@ private[tree] object DecisionTreeMetadata extends Logging {
     new DecisionTreeMetadata(numFeatures, numExamples, numClasses, numBins.max,
       strategy.categoricalFeaturesInfo, unorderedFeatures.toSet, numBins,
       strategy.impurity, strategy.quantileCalculationStrategy, strategy.maxDepth,
-      strategy.minInstancesPerNode, strategy.minInfoGain, numTrees, numFeaturesPerNode)
+      strategy.minInstancesPerNode, strategy.minInfoGain, numTrees, numFeaturesPerNode,isOrigin)
   }
 
   /**

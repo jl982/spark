@@ -962,6 +962,7 @@ object DecisionTree extends Serializable with Logging {
 
     val numFeatures = metadata.numFeatures
 
+    val isOrigin = metadata.isOrigin
     // Sample the input only if there are continuous features.
     val hasContinuousFeatures = Range(0, numFeatures).exists(metadata.isContinuous)
     val sampledInput = if (hasContinuousFeatures) {
@@ -977,105 +978,201 @@ object DecisionTree extends Serializable with Logging {
     } else {
       new Array[LabeledPoint](0)
     }
+    if (isOrigin == 0) {
+      metadata.quantileStrategy match {
+        case Sort =>
+          val sc = input.context
+          val paraSb = sc.parallelize(Range(0, numFeatures))
+          val metadataB = sc.broadcast(metadata)
 
-    metadata.quantileStrategy match {
-      case Sort =>
-        val sc = input.context
-        val paraSb = sc.parallelize(Range(0, numFeatures))
-        val metadataB = sc.broadcast(metadata)
+          // Find all splits.
+          val ret = paraSb.map { case (featureIndex) =>
+            val (split, bin) = if (metadataB.value.isContinuous(featureIndex)) {
+              val featureSamples = sampledInput.map(lp => lp.features(featureIndex))
+              val featureSplits = findSplitsForContinuousFeature(featureSamples,
+                metadataB.value, featureIndex)
 
-        // Find all splits.
-        val ret = paraSb.map { case (featureIndex) =>
-          val (split, bin) = if (metadataB.value.isContinuous(featureIndex)) {
-            val featureSamples = sampledInput.map(lp => lp.features(featureIndex))
-            val featureSplits = findSplitsForContinuousFeature(featureSamples,
-              metadataB.value, featureIndex)
-
-            val numSplits = featureSplits.length
-            val numBins = numSplits + 1
-            logDebug(s"featureIndex = $featureIndex, numSplits = $numSplits")
-            val split = new Array[Split](numSplits)
-            val bin = new Array[Bin](numBins)
-
-            var splitIndex = 0
-            while (splitIndex < numSplits) {
-              val threshold = featureSplits(splitIndex)
-              split(splitIndex) =
-                new Split(featureIndex, threshold, Continuous, List())
-              splitIndex += 1
-            }
-            bin(0) = new Bin(new DummyLowSplit(featureIndex, Continuous),
-              split(0), Continuous, Double.MinValue)
-
-            splitIndex = 1
-            while (splitIndex < numSplits) {
-              bin(splitIndex) =
-                new Bin(split(splitIndex - 1), split(splitIndex),
-                  Continuous, Double.MinValue)
-              splitIndex += 1
-            }
-            bin(numSplits) = new Bin(split(numSplits - 1),
-              new DummyHighSplit(featureIndex, Continuous), Continuous, Double.MinValue)
-            (split, bin)
-          } else {
-            val numSplits = metadataB.value.numSplits(featureIndex)
-            val numBins = metadataB.value.numBins(featureIndex)
-            // Categorical feature
-            val featureArity = metadataB.value.featureArity(featureIndex)
-            if (metadataB.value.isUnordered(featureIndex)) {
-              // TODO: The second half of the bins are unused.  Actually, we could just use
-              //       splits and not build bins for unordered features.  That should be part of
-              //       a later PR since it will require changing other code (using splits instead
-              //       of bins in a few places).
-              // Unordered features
-              //   2^(maxFeatureValue - 1) - 1 combinations
+              val numSplits = featureSplits.length
+              val numBins = numSplits + 1
+              logDebug(s"featureIndex = $featureIndex, numSplits = $numSplits")
               val split = new Array[Split](numSplits)
               val bin = new Array[Bin](numBins)
+
               var splitIndex = 0
               while (splitIndex < numSplits) {
-                val categories: List[Double] =
-                  extractMultiClassCategories(splitIndex + 1, featureArity)
+                val threshold = featureSplits(splitIndex)
                 split(splitIndex) =
-                  new Split(featureIndex, Double.MinValue, Categorical, categories)
-                bin(splitIndex) = {
-                  if (splitIndex == 0) {
-                    new Bin(
-                      new DummyCategoricalSplit(featureIndex, Categorical),
-                      split(0),
-                      Categorical,
-                      Double.MinValue)
-                  } else {
-                    new Bin(
-                      split(splitIndex - 1),
-                      split(splitIndex),
-                      Categorical,
-                      Double.MinValue)
-                  }
-                }
+                  new Split(featureIndex, threshold, Continuous, List())
                 splitIndex += 1
               }
+              bin(0) = new Bin(new DummyLowSplit(featureIndex, Continuous),
+                split(0), Continuous, Double.MinValue)
+
+              splitIndex = 1
+              while (splitIndex < numSplits) {
+                bin(splitIndex) =
+                  new Bin(split(splitIndex - 1), split(splitIndex),
+                    Continuous, Double.MinValue)
+                splitIndex += 1
+              }
+              bin(numSplits) = new Bin(split(numSplits - 1),
+                new DummyHighSplit(featureIndex, Continuous), Continuous, Double.MinValue)
               (split, bin)
             } else {
-              // Ordered features
-              //   Bins correspond to feature values, so we do not need to compute splits or bins
-              //   beforehand.  Splits are constructed as needed during training.
-              val split = new Array[Split](0)
-              val bin = new Array[Bin](0)
-              (split, bin)
+              val numSplits = metadataB.value.numSplits(featureIndex)
+              val numBins = metadataB.value.numBins(featureIndex)
+              // Categorical feature
+              val featureArity = metadataB.value.featureArity(featureIndex)
+              if (metadataB.value.isUnordered(featureIndex)) {
+                // TODO: The second half of the bins are unused.  Actually, we could just use
+                //       splits and not build bins for unordered features.  That should be part of
+                //       a later PR since it will require changing other code (using splits instead
+                //       of bins in a few places).
+                // Unordered features
+                //   2^(maxFeatureValue - 1) - 1 combinations
+                val split = new Array[Split](numSplits)
+                val bin = new Array[Bin](numBins)
+                var splitIndex = 0
+                while (splitIndex < numSplits) {
+                  val categories: List[Double] =
+                    extractMultiClassCategories(splitIndex + 1, featureArity)
+                  split(splitIndex) =
+                    new Split(featureIndex, Double.MinValue, Categorical, categories)
+                  bin(splitIndex) = {
+                    if (splitIndex == 0) {
+                      new Bin(
+                        new DummyCategoricalSplit(featureIndex, Categorical),
+                        split(0),
+                        Categorical,
+                        Double.MinValue)
+                    } else {
+                      new Bin(
+                        split(splitIndex - 1),
+                        split(splitIndex),
+                        Categorical,
+                        Double.MinValue)
+                    }
+                  }
+                  splitIndex += 1
+                }
+                (split, bin)
+              } else {
+                // Ordered features
+                //   Bins correspond to feature values, so we do not need to compute splits or bins
+                //   beforehand.  Splits are constructed as needed during training.
+                val split = new Array[Split](0)
+                val bin = new Array[Bin](0)
+                (split, bin)
+              }
             }
+            (split, bin, (featureIndex, metadataB.value.numSplits(featureIndex)))
+          }.collect()
+          val (splits, bins, meta) = ret.unzip3
+          for ((i, n) <- meta) {
+            metadata.setNumSplits(i, n)
           }
-          (split, bin, (featureIndex, metadataB.value.numSplits(featureIndex)))
-        }.collect()
-        //val (s, b, meta) = ret.unzip3
-        val (splits, bins, meta) = ret.unzip3
-        for ((i, n) <- meta) {
-          metadata.setNumSplits(i, n)
-        }
-        (splits.toArray, bins.toArray)
-      case MinMax =>
-        throw new UnsupportedOperationException("minmax not supported yet.")
-      case ApproxHist =>
-        throw new UnsupportedOperationException("approximate histogram not supported yet.")
+          (splits.toArray, bins.toArray)
+        case MinMax =>
+          throw new UnsupportedOperationException("minmax not supported yet.")
+        case ApproxHist =>
+          throw new UnsupportedOperationException("approximate histogram not supported yet.")
+      }
+    }else {
+      metadata.quantileStrategy match {
+        case Sort =>
+          val splits = new Array[Array[Split]](numFeatures)
+          val bins = new Array[Array[Bin]](numFeatures)
+          val sc = input.context
+
+          val sb = new Array[Array[(Split, Bin)]](numFeatures)
+          val paraSb = sc.parallelize(sb)
+
+          var featureIndex = 0
+          while (featureIndex < numFeatures) {
+            if (metadata.isContinuous(featureIndex)) {
+              val featureSamples = sampledInput.map(lp => lp.features(featureIndex))
+              val featureSplits = findSplitsForContinuousFeature(featureSamples,
+                metadata, featureIndex)
+
+              val numSplits = featureSplits.length
+              val numBins = numSplits + 1
+              logDebug(s"featureIndex = $featureIndex, numSplits = $numSplits")
+              splits(featureIndex) = new Array[Split](numSplits)
+              bins(featureIndex) = new Array[Bin](numBins)
+
+              var splitIndex = 0
+              while (splitIndex < numSplits) {
+                val threshold = featureSplits(splitIndex)
+                splits(featureIndex)(splitIndex) =
+                  new Split(featureIndex, threshold, Continuous, List())
+                splitIndex += 1
+              }
+              bins(featureIndex)(0) = new Bin(new DummyLowSplit(featureIndex, Continuous),
+                splits(featureIndex)(0), Continuous, Double.MinValue)
+
+              splitIndex = 1
+              while (splitIndex < numSplits) {
+                bins(featureIndex)(splitIndex) =
+                  new Bin(splits(featureIndex)(splitIndex - 1), splits(featureIndex)(splitIndex),
+                    Continuous, Double.MinValue)
+                splitIndex += 1
+              }
+              bins(featureIndex)(numSplits) = new Bin(splits(featureIndex)(numSplits - 1),
+                new DummyHighSplit(featureIndex, Continuous), Continuous, Double.MinValue)
+            } else {
+              val numSplits = metadata.numSplits(featureIndex)
+              val numBins = metadata.numBins(featureIndex)
+              // Categorical feature
+              val featureArity = metadata.featureArity(featureIndex)
+              if (metadata.isUnordered(featureIndex)) {
+                // TODO: The second half of the bins are unused.  Actually, we could just use
+                //       splits and not build bins for unordered features.  That should be part of
+                //       a later PR since it will require changing other code (using splits instead
+                //       of bins in a few places).
+                // Unordered features
+                //   2^(maxFeatureValue - 1) - 1 combinations
+                splits(featureIndex) = new Array[Split](numSplits)
+                bins(featureIndex) = new Array[Bin](numBins)
+                var splitIndex = 0
+                while (splitIndex < numSplits) {
+                  val categories: List[Double] =
+                    extractMultiClassCategories(splitIndex + 1, featureArity)
+                  splits(featureIndex)(splitIndex) =
+                    new Split(featureIndex, Double.MinValue, Categorical, categories)
+                  bins(featureIndex)(splitIndex) = {
+                    if (splitIndex == 0) {
+                      new Bin(
+                        new DummyCategoricalSplit(featureIndex, Categorical),
+                        splits(featureIndex)(0),
+                        Categorical,
+                        Double.MinValue)
+                    } else {
+                      new Bin(
+                        splits(featureIndex)(splitIndex - 1),
+                        splits(featureIndex)(splitIndex),
+                        Categorical,
+                        Double.MinValue)
+                    }
+                  }
+                  splitIndex += 1
+                }
+              } else {
+                // Ordered features
+                //   Bins correspond to feature values, so we do not need to compute splits or bins
+                //   beforehand.  Splits are constructed as needed during training.
+                splits(featureIndex) = new Array[Split](0)
+                bins(featureIndex) = new Array[Bin](0)
+              }
+            }
+            featureIndex += 1
+          }
+          (splits, bins)
+        case MinMax =>
+          throw new UnsupportedOperationException("minmax not supported yet.")
+        case ApproxHist =>
+          throw new UnsupportedOperationException("approximate histogram not supported yet.")
+
+      }
     }
   }
 

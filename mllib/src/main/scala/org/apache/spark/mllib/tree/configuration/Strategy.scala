@@ -81,6 +81,7 @@ class Strategy (
     @BeanProperty var maxMemoryInMB: Int = 256,
     @BeanProperty var subsamplingRate: Double = 1,
     @BeanProperty var useNodeIdCache: Boolean = false,
+    @BeanProperty var isOrigin: Int = 1,
     @BeanProperty var checkpointInterval: Int = 10) extends Serializable {
 
   def isMulticlassClassification =
@@ -163,7 +164,7 @@ class Strategy (
   def copy: Strategy = {
     new Strategy(algo, impurity, maxDepth, numClasses, maxBins,
       quantileCalculationStrategy, categoricalFeaturesInfo, minInstancesPerNode, minInfoGain,
-      maxMemoryInMB, subsamplingRate, useNodeIdCache, checkpointInterval)
+      maxMemoryInMB, subsamplingRate, useNodeIdCache, checkpointInterval,isOrigin)
   }
 }
 
