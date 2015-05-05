@@ -128,9 +128,11 @@ private[tree] object DecisionTreeMetadata extends Logging {
     // based on the number of training examples.
     if (strategy.categoricalFeaturesInfo.nonEmpty) {
       val maxCategoriesPerFeature = strategy.categoricalFeaturesInfo.values.max
-      require(maxCategoriesPerFeature <= maxPossibleBins,
-        s"DecisionTree requires maxBins (= $maxPossibleBins) >= max categories " +
-          s"in categorical features (= $maxCategoriesPerFeature)")
+      if(!strategy.extra) {
+        require(maxCategoriesPerFeature <= maxPossibleBins,
+          s"DecisionTree requires maxBins (= $maxPossibleBins) >= max categories " +
+            s"in categorical features (= $maxCategoriesPerFeature)")
+      }
     }
 
     val unorderedFeatures = new mutable.HashSet[Int]()

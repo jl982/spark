@@ -149,7 +149,11 @@ private class RandomForest (
     // Find the splits and the corresponding bins (interval between the splits) using a sample
     // of the input data.
     timer.start("findSplitsBins")
-    val (splits, bins) = DecisionTree.findSplitsBins(retaggedInput, metadata)
+    val (splits, bins) = if(metadata.extra){
+      (new Array[Array[Split]](0), new Array[Array[Bin]](0))
+    }else{
+      DecisionTree.findSplitsBins(retaggedInput, metadata)
+    }
     timer.stop("findSplitsBins")
     logDebug("numBins: feature: number of bins")
     logDebug(Range(0, metadata.numFeatures).map { featureIndex =>
@@ -169,11 +173,12 @@ private class RandomForest (
       (None,None)
     }
     if(metadata.extra) {
-      /*
+
       for(i <- 0 until metadata.numFeatures){
         metadata.setNumSplits(i,1)
       }
-      */
+
+
       println("PRINTING MINS AND MAXES AAAAAAAAAAAA")
       println(println(mins.get.deep.mkString("\n")))
       println(println(maxes.get.deep.mkString("\n")))
@@ -250,8 +255,10 @@ private class RandomForest (
     while (nodeQueue.nonEmpty) {
       // Collect some nodes to split, and choose features for each node (if subsampling).
       // Each group of nodes may come from one or multiple trees, and at multiple levels.
+      timer.start("selectNodesToSplit")
       val (nodesForGroup, treeToNodeToIndexInfo) =
         RandomForest.selectNodesToSplit(nodeQueue, maxMemoryUsage, metadata, rng,mins,maxes)
+      timer.stop("selectNodesToSplit")
       // Sanity check (should never occur):
       assert(nodesForGroup.size > 0,
         s"RandomForest selected empty nodesForGroup.  Error for unknown reason.")
@@ -536,15 +543,39 @@ object RandomForest extends Serializable with Logging {
         val splits = if (!metadata.extra) {
           None
         } else {
-          Some(new Array[Split](featureSubset.get.length))
+          Some(new Array[Split](metadata.numFeaturesPerNode))
         }
         if (metadata.extra) {
-          for (i <- 0 until featureSubset.get.length) {
-            val featureIndex = featureSubset.get(i)
-            if (!metadata.isCategorical(featureIndex)) {
+          for (i <- 0 until metadata.numFeaturesPerNode) {
+
+            val featureIndex = if(featureSubset.nonEmpty){
+              featureSubset.get(i)
+            }else{
+              i
+            }
+            if (metadata.isContinuous(featureIndex)) {
               val min = mins.get(featureIndex)
               val max = maxes.get(featureIndex)
               splits.get(i) = new Split(featureIndex, min + (rng.nextDouble()*(max - min)), Continuous, List())
+            }else{
+              val featureArity = metadata.featureArity(featureIndex)
+              if(featureArity == 2){
+                splits.get(i) = new Split(featureIndex,0,Categorical,List(0))
+                //println("Printing subset chosen for category." + " FeatureArity: " + featureArity + " Set: " + 0)
+              }
+              else {
+                //println("THIS SHOULD NOT BE REACHED")
+                val fullList = 0.until(featureArity).toList
+                val shuffledFullList = rng.shuffle(fullList)
+                val (left, right) = shuffledFullList.splitAt(1 + rng.nextInt(featureArity - 1))
+                val leftSet = rng.shuffle(left)
+                val rightSet = rng.shuffle(right)
+                val set1 = leftSet.take(1 + rng.nextInt(leftSet.length))
+                val set2 = rightSet.take(rng.nextInt(rightSet.length))
+                val finalSet = (set1 ::: set2).map(_.toDouble)
+                //println("Printing subset chosen for category." + " FeatureArity: " + featureArity + " Set: " + finalSet)
+                splits.get(i) = new Split(featureIndex, 0, Categorical, finalSet)
+              }
             }
           }
         }
@@ -555,6 +586,10 @@ object RandomForest extends Serializable with Logging {
       numNodesInGroup += 1
       memUsage += nodeMemUsage
     }
+    println("HERE ARE THE NUM NODES BEING USED: " + numNodesInGroup)
+    println("HERE IS THE MEMORY BEING USED: " + memUsage)
+    println("HERE IS THE MAX MEMORY USABLE: " + maxMemoryUsage)
+    println("NUM NODES REMAINING IN QUEUE: " + nodeQueue.length)
     // Convert mutable maps to immutable ones.
     val nodesForGroup: Map[Int, Array[Node]] = mutableNodesForGroup.mapValues(_.toArray).toMap
     val treeToNodeToIndexInfo = mutableTreeToNodeToIndexInfo.mapValues(_.toMap).toMap

@@ -84,12 +84,19 @@ private[tree] object TreePoint {
       isUnordered: Array[Boolean],
       metadata:DecisionTreeMetadata): TreePoint = {
     val numFeatures = labeledPoint.features.size
-    val arr = new Array[Int](numFeatures)
+    val arr = if(metadata.extra){
+      new Array[Int](0)
+    }
+    else{
+      new Array[Int](numFeatures)
+    }
     var featureIndex = 0
-    while (featureIndex < numFeatures) {
-      arr(featureIndex) = findBin(featureIndex, labeledPoint, featureArity(featureIndex),
-        isUnordered(featureIndex), bins)
-      featureIndex += 1
+    if (!metadata.extra){
+      while (featureIndex < numFeatures) {
+        arr(featureIndex) = findBin(featureIndex, labeledPoint, featureArity(featureIndex),
+          isUnordered(featureIndex), bins)
+        featureIndex += 1
+      }
     }
     if(metadata.extra) {
       return new TreePoint(labeledPoint.label, arr,labeledPoint.features)

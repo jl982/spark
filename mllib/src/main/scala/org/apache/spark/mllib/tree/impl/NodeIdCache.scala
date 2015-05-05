@@ -46,10 +46,10 @@ private[tree] case class NodeIndexUpdater(
   def updateNodeIndex(binnedFeatures: Array[Int], bins: Array[Array[Bin]], treePoint: TreePoint, metadata: DecisionTreeMetadata): Int = {
     if (split.featureType == Continuous) {
       val featureIndex = split.feature
-      val binIndex = binnedFeatures(featureIndex)
       val featureValueUpperBound = if(metadata.extra){
         treePoint.features(featureIndex)
       }else{
+        val binIndex = binnedFeatures(featureIndex)
         bins(featureIndex)(binIndex).highSplit.threshold
       }
       if (featureValueUpperBound <= split.threshold) {
@@ -58,6 +58,14 @@ private[tree] case class NodeIndexUpdater(
         Node.rightChildIndex(nodeIndex)
       }
     } else {
+      if(metadata.extra){
+        if(split.categories.contains(treePoint.features(split.feature))){
+          Node.leftChildIndex(nodeIndex)
+        }
+        else{
+          Node.rightChildIndex(nodeIndex)
+        }
+      }
       if (split.categories.contains(binnedFeatures(split.feature).toDouble)) {
         Node.leftChildIndex(nodeIndex)
       } else {
