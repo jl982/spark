@@ -233,6 +233,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
         val blockManager = SparkEnv.get.blockManager
         blockManager.getLocalValues(broadcastId) match {
           case Some(blockResult) =>
+            // Found broadcasted value in local [[BlockManager]]. Use it directly.
             if (blockResult.data.hasNext) {
               val x = blockResult.data.next().asInstanceOf[T]
               releaseBlockManagerLock(broadcastId)

@@ -344,7 +344,7 @@ class DataFrameJoinSuite extends QueryTest
             val broadcastHashJoins = sparkPlan.collect { case p: BroadcastHashJoinExec => p }
             assert(broadcastHashJoins.size == 1)
             val broadcastExchanges = broadcastHashJoins.head.collect {
-              case p: BroadcastExchangeExec => p
+              case p: BroadcastExchangeExec[_] => p
             }
             assert(broadcastExchanges.size == 1)
             val tables = broadcastExchanges.head.collect {
