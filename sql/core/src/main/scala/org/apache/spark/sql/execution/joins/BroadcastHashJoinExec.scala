@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastDistribution, Distribution, HashPartitioning, Partitioning, PartitioningCollection, UnspecifiedDistribution}
 import org.apache.spark.sql.execution.{CodegenSupport, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Performs an inner hash join of two child relations.  When the output RDD of this operator is
@@ -183,7 +184,13 @@ case class BroadcastHashJoinExec(
       // For inner and outer joins, one row from the streamed side may produce multiple result rows,
       // if the build side has duplicated keys. Note that here we wait for the broadcast to be
       // finished, which is a no-op because it's already finished when we wait it in `doProduce`.
-      !buildPlan.executeBroadcast[HashedRelation]().value.keyIsUnique
+      if (SQLConf.get.executorSideBroadcastEnabled) {
+        logInfo(s"Executor side broadcast is enabled, assuming multiple result rows per input row")
+        true
+      } else {
+        logInfo(s"Fetching broadcasted build side to driver to check if key is unique")
+        !buildPlan.executeBroadcast[HashedRelation]().value.keyIsUnique
+      }
 
     // Other joins types(semi, anti, existence) can at most produce one result row for one input
     // row from the streamed side.
@@ -202,7 +209,7 @@ case class BroadcastHashJoinExec(
     // create a name for HashedRelation
     val broadcastRelation = buildPlan.executeBroadcast[HashedRelation]()
     val broadcast = ctx.addReferenceObj("broadcast", broadcastRelation)
-    val clsName = broadcastRelation.value.getClass.getName
+    val clsName = classOf[HashedRelation].getName
 
     // Inline mutable state since not many join operations in a task
     val relationTerm = ctx.addMutableState(clsName, "relation",
@@ -215,9 +222,13 @@ case class BroadcastHashJoinExec(
 
   protected override def prepareRelation(ctx: CodegenContext): HashedRelationInfo = {
     val (broadcastRelation, relationTerm) = prepareBroadcast(ctx)
-    HashedRelationInfo(relationTerm,
+    if (SQLConf.get.executorSideBroadcastEnabled) {
+      HashedRelationInfo(relationTerm, keyIsUnique = false, isEmpty = false)
+    } else {
+      HashedRelationInfo(relationTerm,
       broadcastRelation.value.keyIsUnique,
       broadcastRelation.value == EmptyHashedRelation)
+    }
   }
 
   /**
@@ -229,24 +240,37 @@ case class BroadcastHashJoinExec(
       val (broadcastRelation, relationTerm) = prepareBroadcast(ctx)
       val (keyEv, anyNull) = genStreamSideJoinKey(ctx, input)
       val numOutput = metricTerm(ctx, "numOutputRows")
-
-      if (broadcastRelation.value == EmptyHashedRelation) {
+      val executorSideBroadcast = SQLConf.get.executorSideBroadcastEnabled
+      val consumeCode =
         s"""
-           |// If the right side is empty, NAAJ simply returns the left side.
            |$numOutput.add(1);
            |${consume(ctx, input)}
          """.stripMargin
-      } else if (broadcastRelation.value == HashedRelationWithAllNullKeys) {
+
+      if (!executorSideBroadcast && broadcastRelation.value == EmptyHashedRelation) {
+        s"""
+           |// If the right side is empty, NAAJ simply returns the left side.
+           |$consumeCode
+         """.stripMargin
+      } else if (!executorSideBroadcast &&
+          broadcastRelation.value == HashedRelationWithAllNullKeys) {
         s"""
            |// If the right side contains any all-null key, NAAJ simply returns Nothing.
          """.stripMargin
       } else {
         s"""
-           |// generate join key for stream side
-           |${keyEv.code}
-           |if (!$anyNull && $relationTerm.getValue(${keyEv.value}) == null) {
-           |  $numOutput.add(1);
-           |  ${consume(ctx, input)}
+           |if ($relationTerm == ${EmptyHashedRelation.getClass.getCanonicalName}.MODULE$$) {
+           |  // If the right side is empty, NAAJ simply returns the left side.
+           |  $consumeCode
+           |} else if ($relationTerm
+           |    == ${HashedRelationWithAllNullKeys.getClass.getCanonicalName}.MODULE$$) {
+           |  // If the right side contains any all-null key, NAAJ simply returns Nothing.
+           |} else {
+           |  // generate join key for stream side
+           |  ${keyEv.code}
+           |  if (!$anyNull && $relationTerm.getValue(${keyEv.value}) == null) {
+           |    $consumeCode
+           |  }
            |}
          """.stripMargin
       }

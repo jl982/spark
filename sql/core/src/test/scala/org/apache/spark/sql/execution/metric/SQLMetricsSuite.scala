@@ -467,11 +467,13 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     val df2 = Seq((1, "1"), (2, "2"), (3, "3"), (4, "4")).toDF("key2", "value")
     Seq((1L, false), (2L, true)).foreach { case (nodeId, enableWholeStage) =>
       val df = df2.join(broadcast(df1), $"key" === $"key2", "left_anti")
-      testSparkPlanMetrics(df, 2, Map(
-        nodeId -> (("BroadcastHashJoin", Map(
-          "number of output rows" -> 2L)))),
-        enableWholeStage
-      )
+      withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+        testSparkPlanMetrics(df, 2, Map(
+          nodeId -> (("BroadcastHashJoin", Map(
+            "number of output rows" -> 2L)))),
+          enableWholeStage
+        )
+      }
     }
   }
 

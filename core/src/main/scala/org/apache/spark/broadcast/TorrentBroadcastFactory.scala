@@ -20,6 +20,7 @@ package org.apache.spark.broadcast
 import scala.reflect.ClassTag
 
 import org.apache.spark.{SecurityManager, SparkConf}
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 
 /**
@@ -27,19 +28,23 @@ import org.apache.spark.rdd.RDD
  * protocol to do a distributed transfer of the broadcasted data to the executors. Refer to
  * [[org.apache.spark.broadcast.TorrentBroadcast]] for more details.
  */
-private[spark] class TorrentBroadcastFactory extends BroadcastFactory {
+private[spark] class TorrentBroadcastFactory extends BroadcastFactory with Logging {
 
   override def initialize(isDriver: Boolean, conf: SparkConf,
       securityMgr: SecurityManager): Unit = { }
 
-  override def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean, id: Long): Broadcast[T] = {
-    new TorrentBroadcast[T](value_, id)
+  override def newDriverBroadcast[T: ClassTag](
+      value_ : T,
+      isLocal: Boolean,
+      id: Long): Broadcast[T] = {
+    new TorrentDriverBroadcast[T](value_, id)
   }
 
-  override def newBroadcastOnExecutor[T: ClassTag, U: ClassTag](
+  override def newExecutorBroadcast[T: ClassTag, U: ClassTag](
       rdd: RDD[T],
       mode: BroadcastMode[T],
       isLocal: Boolean, id: Long): Broadcast[U] = {
+    logInfo(s"Creating executor broadcast $id for rdd_${rdd.id}")
     new TorrentExecutorBroadcast[T, U](rdd, mode, id)
   }
 

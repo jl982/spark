@@ -1171,7 +1171,7 @@ class RDDSuite extends SparkFunSuite with SharedSparkContext with Eventually {
       override def transform(rows: Array[Int]): Array[Int] = rows
       override def transform(rows: Iterator[Int], sizeHint: Option[Long]): Array[Int] = rows.toArray
     }
-    val broadcastedVal = sc.broadcastRDDOnExecutor[Int, Array[Int]](rdd, mode)
+    val broadcastedVal = sc.broadcast[Int, Array[Int]](rdd, mode)
     val collected = sc.parallelize(1 to 2, 2).map { _ =>
       broadcastedVal.value.reduce(_ + _) // 1 + 2 + 3 + 4 = 10
     }.collect()
@@ -1187,7 +1187,7 @@ class RDDSuite extends SparkFunSuite with SharedSparkContext with Eventually {
       override def transform(rows: Array[Int]): Int = 1
       override def transform(rows: Iterator[Int], sizeHint: Option[Long]): Int = 1
     }
-    val broadcastedVal = sc.broadcastRDDOnExecutor[Int, Int](rdd, mode)
+    val broadcastedVal = sc.broadcast[Int, Int](rdd, mode)
     val collected = sc.parallelize(1 to 2, 2).map { _ =>
       broadcastedVal.value
     }.collect()
@@ -1207,7 +1207,7 @@ class RDDSuite extends SparkFunSuite with SharedSparkContext with Eventually {
       override def transform(rows: Array[Int]): Int = 1
       override def transform(rows: Iterator[Int], sizeHint: Option[Long]): Int = 1
     }
-    val broadcastedVal = sc.broadcastRDDOnExecutor[Int, Int](rdd, mode)
+    val broadcastedVal = sc.broadcast[Int, Int](rdd, mode)
     rdd.unpersist()
     val collected = sc.parallelize(1 to 2, 2).map { _ =>
       broadcastedVal.value

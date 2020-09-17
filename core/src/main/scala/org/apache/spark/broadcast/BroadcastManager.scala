@@ -63,7 +63,7 @@ private[spark] class BroadcastManager(
         .asInstanceOf[java.util.Map[Any, Any]]
     )
 
-  def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
+  def newDriverBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
     val bid = nextBroadcastId.getAndIncrement()
     value_ match {
       case pb: PythonBroadcast =>
@@ -75,14 +75,14 @@ private[spark] class BroadcastManager(
 
       case _ => // do nothing
     }
-    broadcastFactory.newBroadcast[T](value_, isLocal, bid)
+    broadcastFactory.newDriverBroadcast[T](value_, isLocal, bid)
   }
 
-  def newBroadcastOnExecutor[T: ClassTag, U: ClassTag](
+  def newExecutorBroadcast[T: ClassTag, U: ClassTag](
       rdd_ : RDD[T],
       mode: BroadcastMode[T],
       isLocal: Boolean): Broadcast[U] = {
-    broadcastFactory.newBroadcastOnExecutor[T, U](rdd_, mode, isLocal,
+    broadcastFactory.newExecutorBroadcast[T, U](rdd_, mode, isLocal,
       nextBroadcastId.getAndIncrement())
   }
 

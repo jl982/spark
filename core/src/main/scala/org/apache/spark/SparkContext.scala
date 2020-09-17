@@ -1488,8 +1488,8 @@ class SparkContext(config: SparkConf) extends Logging {
     assertNotStopped()
     require(!classOf[RDD[_]].isAssignableFrom(classTag[T].runtimeClass),
       "Can not directly broadcast RDDs; instead, call collect() and broadcast the result.")
-    val bc = env.broadcastManager.newBroadcast[T](value, isLocal)
-    val callSite = getCallSite
+    val bc = env.broadcastManager.newDriverBroadcast[T](value, isLocal)
+    val callSite = getCallSite()
     logInfo("Created broadcast " + bc.id + " from " + callSite.shortForm)
     cleaner.foreach(_.registerBroadcastForCleanup(bc))
     bc
@@ -1505,13 +1505,15 @@ class SparkContext(config: SparkConf) extends Logging {
    * access its data on the executors.
    */
   @DeveloperApi
-  def broadcastRDDOnExecutor[T: ClassTag, U: ClassTag](
+  def broadcast[T: ClassTag, U: ClassTag](
       rdd: RDD[T], mode: BroadcastMode[T]): Broadcast[U] = {
     assertNotStopped()
-    val bc = env.broadcastManager.newBroadcastOnExecutor[T, U](rdd, mode, isLocal)
+    require(!classOf[RDD[_]].isAssignableFrom(classTag[T].runtimeClass),
+      "Can not directly broadcast RDDs; instead, call collect() and broadcast the result.")
+    val bc = env.broadcastManager.newExecutorBroadcast[T, U](rdd, mode, isLocal)
     rdd.broadcast(bc)
-    val callSite = getCallSite
-    logInfo("Created broadcast " + bc.id + " from " + callSite.shortForm)
+    val callSite = getCallSite()
+    logInfo("Created executor broadcast " + bc.id + " from " + callSite.shortForm)
     cleaner.foreach(_.registerBroadcastForCleanup(bc))
     bc
   }

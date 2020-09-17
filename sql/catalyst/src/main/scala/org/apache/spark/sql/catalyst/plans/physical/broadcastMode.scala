@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.InternalRow
  * Marker trait to identify the shape in which tuples are broadcasted. Typical examples of this are
  * identity (tuples remain unchanged) or hashed (tuples are converted into some hash index).
  */
-abstract class RowBroadcastMode extends BroadcastMode[InternalRow] {
+trait RowBroadcastMode extends BroadcastMode[InternalRow] {
   override def canonicalized: RowBroadcastMode = this
 }
 

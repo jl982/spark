@@ -31,7 +31,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
-import org.apache.spark.sql.catalyst.plans.physical.{BroadcastPartitioning, Partitioning, RowBroadcastMode}
+import org.apache.spark.sql.catalyst.plans.physical.{BroadcastPartitioning, Partitioning,
+  RowBroadcastMode}
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.joins.HashedRelation
 import org.apache.spark.sql.execution.metric.SQLMetrics
@@ -99,7 +100,11 @@ case class BroadcastExchangeExec[T: ClassTag](
   }
 
   override def runtimeStatistics: Statistics = {
-    val dataSize = metrics("dataSize").value
+    val dataSize = if (sqlContext.conf.executorSideBroadcastEnabled) {
+      Long.MaxValue
+    } else {
+      metrics("dataSize").value
+    }
     Statistics(dataSize)
   }
 
@@ -124,7 +129,7 @@ case class BroadcastExchangeExec[T: ClassTag](
     val beforeBroadcast = System.nanoTime()
     longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
 
-    val broadcasted = sparkContext.broadcastRDDOnExecutor[InternalRow, T](childRDD, mode)
+    val broadcasted = sparkContext.broadcast[InternalRow, T](childRDD, mode)
       .asInstanceOf[broadcast.Broadcast[Any]]
 
     longMetric("broadcastTime") += NANOSECONDS.toMillis(System.nanoTime() - beforeBroadcast)

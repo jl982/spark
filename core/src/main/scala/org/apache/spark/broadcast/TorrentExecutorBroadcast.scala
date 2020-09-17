@@ -19,22 +19,21 @@ package org.apache.spark.broadcast
 
 import java.io.ObjectOutputStream
 
-import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 import scala.util.Random
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.storage.{BlockId, BlockResult, BroadcastBlockId, RDDBlockId, StorageLevel}
+import org.apache.spark.storage.{BlockResult, RDDBlockId, StorageLevel}
 import org.apache.spark.util.Utils
 
 /**
  * A BitTorrent-like implementation of [[org.apache.spark.broadcast.Broadcast]].
  *
- * Different to [[TorrentBroadcast]], this implementation doesn't divide the object to broadcast.
- * In contrast, this implementation performs broadcast on executor side for a RDD. So the results
- * of the RDD does not need to collect first back to the driver before broadcasting.
+ * Different to [[TorrentDriverBroadcast]], this implementation doesn't divide the object to
+ * broadcast. In contrast, this implementation performs broadcast on executor side for a RDD.
+ * So the results of the RDD does not need to collect first back to the driver before broadcasting.
  *
  * The mechanism is as follows:
  *
@@ -54,24 +53,12 @@ import org.apache.spark.util.Utils
 private[spark] class TorrentExecutorBroadcast[T: ClassTag, U: ClassTag](
     @transient private val rdd: RDD[T],
     mode: BroadcastMode[T],
-    id: Long) extends Broadcast[U](id) with Logging with Serializable {
+    id: Long) extends TorrentBroadcast[U](id) with Logging with Serializable {
 
   // Total number of blocks this broadcast variable contains.
-  private val numBlocks: Int = rdd.getNumPartitions
+  override protected val numBlocks: Int = rdd.getNumPartitions
   // The id of the RDD to be broadcasted on executors.
   private val rddId: Int = rdd.id
-
-  /**
-   * Value of the broadcast object on executors. This is reconstructed by [[readBroadcastBlock]],
-   * which builds this value by reading blocks from other executors.
-   */
-  @transient private lazy val _value: U = readBroadcastBlock()
-
-  private val broadcastId = BroadcastBlockId(id)
-
-  override protected def getValue() = {
-    _value
-  }
 
   /** Fetch torrent blocks from other executors. */
   private def readBlocks(): Array[T] = {
@@ -101,26 +88,12 @@ private[spark] class TorrentExecutorBroadcast[T: ClassTag, U: ClassTag](
               }
               blocks(pid) = data
             case None =>
+              logWarning(s"Failed to get $pieceId of $broadcastId")
               throw new SparkException(s"Failed to get $pieceId of $broadcastId")
           }
       }
     }
     blocks.flatMap(x => x)
-  }
-
-  /**
-   * Remove all persisted state associated with this Torrent broadcast on the executors.
-   */
-  override protected def doUnpersist(blocking: Boolean) {
-    TorrentBroadcast.unpersist(id, removeFromDriver = false, blocking)
-  }
-
-  /**
-   * Remove all persisted state associated with this Torrent broadcast on the executors
-   * and driver.
-   */
-  override protected def doDestroy(blocking: Boolean) {
-    TorrentBroadcast.unpersist(id, removeFromDriver = true, blocking)
   }
 
   /** Used by the JVM when serializing this object. */
@@ -129,50 +102,13 @@ private[spark] class TorrentExecutorBroadcast[T: ClassTag, U: ClassTag](
     out.defaultWriteObject()
   }
 
-  private def readBroadcastBlock(): U = Utils.tryOrIOException {
-    TorrentBroadcast.synchronized {
-      val blockManager = SparkEnv.get.blockManager
-      blockManager.getLocalValues(broadcastId).map(_.data.next()) match {
-        case Some(x) =>
-          // Found broadcasted value in local [[BlockManager]]. Use it directly.
-          releaseLock(broadcastId)
-          x.asInstanceOf[U]
+  override protected def readAndProcessBlocks(): U = {
+    logInfo(s"Started reading executor broadcast variable $id with $numBlocks pieces")
+    val startTimeMs = System.currentTimeMillis()
+    val rawInput = readBlocks()
+    logInfo("Reading executor broadcast variable " + id + " took"
+      + Utils.getUsedTimeNs(startTimeMs))
 
-        case None =>
-          // Not found. Going to fetch the chunks of the broadcasted value from executors.
-          logInfo("Started reading broadcast variable " + id)
-          val startTimeMs = System.currentTimeMillis()
-          val rawInput = readBlocks()
-          logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeNs(startTimeMs))
-
-          val obj = mode.transform(rawInput.toArray).asInstanceOf[U]
-          // Store the merged copy in BlockManager so other tasks on this executor don't
-          // need to re-fetch it.
-          val storageLevel = StorageLevel.MEMORY_AND_DISK
-          if (!blockManager.putSingle(broadcastId, obj, storageLevel, tellMaster = false)) {
-            throw new SparkException(s"Failed to store $broadcastId in BlockManager")
-          }
-          obj
-      }
-    }
-  }
-
-  /**
-   * If running in a task, register the given block's locks for release upon task completion.
-   * Otherwise, if not running in a task then immediately release the lock.
-   */
-  private def releaseLock(blockId: BlockId): Unit = {
-    val blockManager = SparkEnv.get.blockManager
-    Option(TaskContext.get()) match {
-      case Some(taskContext) =>
-        taskContext.addTaskCompletionListener[Unit](_ => blockManager.releaseLock(blockId))
-      case None =>
-        // This should only happen on the driver, where broadcast variables may be accessed
-        // outside of running tasks (e.g. when computing rdd.partitions()). In order to allow
-        // broadcast variables to be garbage collected we need to free the reference here
-        // which is slightly unsafe but is technically okay because broadcast variables aren't
-        // stored off-heap.
-        blockManager.releaseLock(blockId)
-    }
+    mode.transform(rawInput).asInstanceOf[U]
   }
 }
