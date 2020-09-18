@@ -166,25 +166,27 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     //         HashAggregate(nodeId = 4)
     //           Exchange(nodeId = 5)
     //             LocalTableScan(nodeId = 6)
-    Seq(true, false).foreach { enableWholeStage =>
-      val df = generateRandomBytesDF().repartition(1).groupBy('a).count()
-      val nodeIds = if (enableWholeStage) {
-        Set(4L, 1L)
-      } else {
-        Set(2L, 0L)
-      }
-      val metrics = getSparkPlanMetrics(df, 1, nodeIds, enableWholeStage).get
-      nodeIds.foreach { nodeId =>
-        val probes = metrics(nodeId)._2("avg hash probe bucket list iters").toString
-        if (!probes.contains("\n")) {
-          // It's a single metrics value
-          assert(probes.toDouble > 1.0)
+    withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+      Seq(true, false).foreach { enableWholeStage =>
+        val df = generateRandomBytesDF().repartition(1).groupBy('a).count()
+        val nodeIds = if (enableWholeStage) {
+          Set(4L, 1L)
         } else {
-          val mainValue = probes.split("\n").apply(1).stripPrefix("(").stripSuffix(")")
-          // Extract min, med, max from the string and strip off everthing else.
-          val index = mainValue.indexOf(" (", 0)
-          mainValue.slice(0, index).split(", ").foreach {
-            probe => assert(probe.toDouble > 1.0)
+          Set(2L, 0L)
+        }
+        val metrics = getSparkPlanMetrics(df, 1, nodeIds, enableWholeStage).get
+        nodeIds.foreach { nodeId =>
+          val probes = metrics(nodeId)._2("avg hash probe bucket list iters").toString
+          if (!probes.contains("\n")) {
+            // It's a single metrics value
+            assert(probes.toDouble > 1.0)
+          } else {
+            val mainValue = probes.split("\n").apply(1).stripPrefix("(").stripSuffix(")")
+            // Extract min, med, max from the string and strip off everthing else.
+            val index = mainValue.indexOf(" (", 0)
+            mainValue.slice(0, index).split(", ").foreach {
+              probe => assert(probe.toDouble > 1.0)
+            }
           }
         }
       }
@@ -301,11 +303,13 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     // ... -> BroadcastHashJoin(nodeId = 1) -> TungstenProject(nodeId = 0)
     Seq((1L, false), (2L, true)).foreach { case (nodeId, enableWholeStage) =>
       val df = df1.join(broadcast(df2), "key")
-      testSparkPlanMetrics(df, 2, Map(
-        nodeId -> (("BroadcastHashJoin", Map(
-          "number of output rows" -> 2L)))),
-        enableWholeStage
-      )
+      withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+        testSparkPlanMetrics(df, 2, Map(
+          nodeId -> (("BroadcastHashJoin", Map(
+            "number of output rows" -> 2L)))),
+          enableWholeStage
+        )
+      }
     }
   }
 
@@ -405,33 +409,37 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     Seq(("left_outer", 0L, 5L, false), ("right_outer", 0L, 6L, false), ("left_outer", 1L, 5L, true),
       ("right_outer", 1L, 6L, true)).foreach { case (joinType, nodeId, numRows, enableWholeStage) =>
       val df = df1.join(broadcast(df2), $"key" === $"key2", joinType)
-      testSparkPlanMetrics(df, 2, Map(
-        nodeId -> (("BroadcastHashJoin", Map(
-          "number of output rows" -> numRows)))),
-        enableWholeStage
-      )
+      withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+        testSparkPlanMetrics(df, 2, Map(
+          nodeId -> (("BroadcastHashJoin", Map(
+            "number of output rows" -> numRows)))),
+          enableWholeStage
+        )
+      }
     }
   }
 
   test("BroadcastNestedLoopJoin metrics") {
     val testDataForJoin = testData2.filter('a < 2) // TestData2(1, 1) :: TestData2(1, 2)
     testDataForJoin.createOrReplaceTempView("testDataForJoin")
-    withSQLConf(SQLConf.CROSS_JOINS_ENABLED.key -> "true") {
-      withTempView("testDataForJoin") {
-        // Assume the execution plan is
-        // ... -> BroadcastNestedLoopJoin(nodeId = 1) -> TungstenProject(nodeId = 0)
-        val leftQuery = "SELECT * FROM testData2 LEFT JOIN testDataForJoin ON " +
-          "testData2.a * testDataForJoin.a != testData2.a + testDataForJoin.a"
-        val rightQuery = "SELECT * FROM testData2 RIGHT JOIN testDataForJoin ON " +
-          "testData2.a * testDataForJoin.a != testData2.a + testDataForJoin.a"
-        Seq((leftQuery, false), (rightQuery, false), (leftQuery, true), (rightQuery, true))
-          .foreach { case (query, enableWholeStage) =>
-          val df = spark.sql(query)
-          testSparkPlanMetrics(df, 2, Map(
-            0L -> (("BroadcastNestedLoopJoin", Map(
-              "number of output rows" -> 12L)))),
-            enableWholeStage
-          )
+    withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+      withSQLConf(SQLConf.CROSS_JOINS_ENABLED.key -> "true") {
+        withTempView("testDataForJoin") {
+          // Assume the execution plan is
+          // ... -> BroadcastNestedLoopJoin(nodeId = 1) -> TungstenProject(nodeId = 0)
+          val leftQuery = "SELECT * FROM testData2 LEFT JOIN testDataForJoin ON " +
+            "testData2.a * testDataForJoin.a != testData2.a + testDataForJoin.a"
+          val rightQuery = "SELECT * FROM testData2 RIGHT JOIN testDataForJoin ON " +
+            "testData2.a * testDataForJoin.a != testData2.a + testDataForJoin.a"
+          Seq((leftQuery, false), (rightQuery, false), (leftQuery, true), (rightQuery, true))
+            .foreach { case (query, enableWholeStage) =>
+              val df = spark.sql(query)
+              testSparkPlanMetrics(df, 2, Map(
+                0L -> (("BroadcastNestedLoopJoin", Map(
+                  "number of output rows" -> 12L)))),
+                enableWholeStage
+              )
+            }
         }
       }
     }
@@ -444,11 +452,13 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     // ... -> BroadcastHashJoin(nodeId = 1)
     Seq((1L, false), (2L, true)).foreach { case (nodeId, enableWholeStage) =>
       val df = df1.join(broadcast(df2), $"key" === $"key2", "leftsemi")
-      testSparkPlanMetrics(df, 2, Map(
-        nodeId -> (("BroadcastHashJoin", Map(
-          "number of output rows" -> 2L)))),
-        enableWholeStage
-      )
+      withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+        testSparkPlanMetrics(df, 2, Map(
+          nodeId -> (("BroadcastHashJoin", Map(
+            "number of output rows" -> 2L)))),
+          enableWholeStage
+        )
+      }
     }
   }
 
@@ -457,11 +467,13 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     val df2 = Seq((1, "1"), (2, "2"), (3, "3"), (4, "4")).toDF("key2", "value")
     Seq((1L, false), (2L, true)).foreach { case (nodeId, enableWholeStage) =>
       val df = df2.join(broadcast(df1), $"key" === $"key2", "left_anti")
-      testSparkPlanMetrics(df, 2, Map(
-        nodeId -> (("BroadcastHashJoin", Map(
-          "number of output rows" -> 2L)))),
-        enableWholeStage
-      )
+      withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> "false") {
+        testSparkPlanMetrics(df, 2, Map(
+          nodeId -> (("BroadcastHashJoin", Map(
+            "number of output rows" -> 2L)))),
+          enableWholeStage
+        )
+      }
     }
   }
 
@@ -557,30 +569,42 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
 
     // TODO: test file source V2 as well when its statistics is correctly computed.
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
-      withTempDir { tempDir =>
-        withTempView("pqS") {
-          val dir = new File(tempDir, "pqS").getCanonicalPath
+      Seq(true, false).foreach { executorBroadcast =>
+        withSQLConf(SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED.key -> executorBroadcast.toString) {
+          withTempDir { tempDir =>
+            withTempView("pqS") {
+              val dir = new File(tempDir, "pqS").getCanonicalPath
 
-          spark.range(10).write.parquet(dir)
-          spark.read.parquet(dir).createOrReplaceTempView("pqS")
+              spark.range(10).write.parquet(dir)
+              spark.read.parquet(dir).createOrReplaceTempView("pqS")
 
-          // The executed plan looks like:
-          // Exchange RoundRobinPartitioning(2)
-          // +- BroadcastNestedLoopJoin BuildLeft, Cross
-          //   :- BroadcastExchange IdentityBroadcastMode
-          //   :  +- Exchange RoundRobinPartitioning(3)
-          //   :     +- *Range (0, 30, step=1, splits=2)
-          //   +- *FileScan parquet [id#465L] Batched: true, Format: Parquet, Location: ...(ignored)
-          val res3 = InputOutputMetricsHelper.run(
-            spark.range(30).repartition(3).crossJoin(sql("select * from pqS")).repartition(2).toDF()
-          )
-          // The query above is executed in the following stages:
-          //   1. range(30)                   => (30, 0, 30)
-          //   2. sql("select * from pqS")    => (0, 30, 0)
-          //   3. crossJoin(...) of 1. and 2. => (10, 0, 300)
-          //   4. shuffle & return results    => (0, 300, 0)
-          assert(res3 === (30L, 0L, 30L) :: (0L, 30L, 0L) :: (10L, 0L, 300L) :: (0L, 300L, 0L) ::
-            Nil)
+              // The executed plan looks like:
+              // Exchange RoundRobinPartitioning(2)
+              // +- BroadcastNestedLoopJoin BuildLeft, Cross
+              //   :- BroadcastExchange IdentityBroadcastMode
+              //   :  +- Exchange RoundRobinPartitioning(3)
+              //   :     +- *Range (0, 30, step=1, splits=2)
+              //   +- *FileScan parquet [id#465L] Batched: true, Format: Parquet, Location: ...
+              val res3 = InputOutputMetricsHelper.run(
+                spark.range(30).repartition(3)
+                  .crossJoin(sql("select * from pqS")).repartition(2).toDF()
+              )
+              // The query above is executed in the following stages:
+              //   1. range(30)                   => (30, 0, 30)
+              //   2a. sql("select * from pqS")   => (0, 30, 0)
+              //   2b. (only when `SQLConf.EXECUTOR_SIDE_BROADCAST_ENABLED` is enabled)
+              //       executor-side-broadcast    => (0, 0, 0)
+              //   3. crossJoin(...) of 1. and 2. => (10, 0, 300)
+              //   4. shuffle & return results    => (0, 300, 0)
+              val expected = if (executorBroadcast) {
+                (30L, 0L, 30L) :: (0L, 30L, 0L) :: (0L, 0L, 0L) :: (10L, 0L, 300L) ::
+                  (0L, 300L, 0L) :: Nil
+              } else {
+                (30L, 0L, 30L) :: (0L, 30L, 0L) :: (10L, 0L, 300L) :: (0L, 300L, 0L) :: Nil
+              }
+              assert(res3 === expected)
+            }
+          }
         }
       }
     }

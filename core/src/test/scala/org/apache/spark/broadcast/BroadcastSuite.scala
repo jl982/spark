@@ -49,6 +49,11 @@ class DummyBroadcastClass(rdd: RDD[Int]) extends Serializable {
   }
 }
 
+class IntArrayBroadcastMode extends BroadcastMode[Int] {
+  override def transform(rows: Array[Int]): Array[Int] = rows
+  override def transform(rows: Iterator[Int], sizeHint: Option[Long]): Array[Int] = rows.toArray
+}
+
 class BroadcastSuite extends SparkFunSuite with LocalSparkContext with EncryptionFunSuite {
 
   test("Using TorrentBroadcast locally") {
@@ -144,7 +149,7 @@ class BroadcastSuite extends SparkFunSuite with LocalSparkContext with Encryptio
     sc.stop()
   }
 
-  encryptionTest("Cache broadcast to disk") { conf =>
+  encryptionTest("Cache broadcast to disk - driver side") { conf =>
     conf.setMaster("local")
       .setAppName("test")
       .set(config.MEMORY_STORAGE_FRACTION, 0.0)
@@ -154,7 +159,19 @@ class BroadcastSuite extends SparkFunSuite with LocalSparkContext with Encryptio
     assert(broadcast.value.sum === 10)
   }
 
-  test("One broadcast value instance per executor") {
+  encryptionTest("Cache broadcast to disk - executor side") { conf =>
+    conf.setMaster("local")
+      .setAppName("test")
+      .set("spark.memory.useLegacyMode", "true")
+      .set("spark.storage.memoryFraction", "0.0")
+    sc = new SparkContext(conf)
+    val rdd = sc.parallelize(1 to 4, 2).persist(StorageLevel.MEMORY_AND_DISK)
+    rdd.count()
+    val executorBroadcast = sc.broadcast[Int, Array[Int]](rdd, new IntArrayBroadcastMode)
+    assert(executorBroadcast.value.sum === 10)
+  }
+
+  test("One broadcast value instance per executor - driver side") {
     val conf = new SparkConf()
       .setMaster("local[4]")
       .setAppName("test")
@@ -170,7 +187,7 @@ class BroadcastSuite extends SparkFunSuite with LocalSparkContext with Encryptio
     assert(instances.size === 1)
   }
 
-  test("One broadcast value instance per executor when memory is constrained") {
+  test("One broadcast value instance per executor when memory is constrained - driver side") {
     val conf = new SparkConf()
       .setMaster("local[4]")
       .setAppName("test")
@@ -185,6 +202,25 @@ class BroadcastSuite extends SparkFunSuite with LocalSparkContext with Encryptio
       .toSet
 
     assert(instances.size === 1)
+  }
+
+  test("One broadcast value instance per executor when memory is constrained - executor side") {
+    val conf = new SparkConf()
+      .setMaster("local[4]")
+      .setAppName("test")
+      .set("spark.memory.useLegacyMode", "true")
+      .set("spark.storage.memoryFraction", "0.0")
+
+    sc = new SparkContext(conf)
+    val rdd = sc.parallelize(1 to 4, 2).persist(StorageLevel.MEMORY_AND_DISK)
+    rdd.count()
+    val executorBroadcast = sc.broadcast[Int, Array[Int]](rdd, new IntArrayBroadcastMode)
+    val executorInstances = sc.parallelize(1 to 10)
+      .map(x => System.identityHashCode(executorBroadcast.value))
+      .collect()
+      .toSet
+
+    assert(executorInstances.size === 1)
   }
 
   /**

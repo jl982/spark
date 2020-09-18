@@ -22,6 +22,7 @@ import java.util.concurrent._
 
 import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
+import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
 import org.apache.spark.{broadcast, SparkException}
@@ -30,11 +31,13 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
-import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{BroadcastPartitioning, Partitioning,
+  RowBroadcastMode}
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.joins.HashedRelation
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.map.BytesToBytesMap
 import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 
@@ -68,19 +71,27 @@ trait BroadcastExchangeLike extends Exchange {
 /**
  * A [[BroadcastExchangeExec]] collects, transforms and finally broadcasts the result of
  * a transformed SparkPlan.
+ *
+ * @tparam T The type of object transformed from the result of RDD by [[broadcast.BroadcastMode]].
  */
-case class BroadcastExchangeExec(
-    mode: BroadcastMode,
+case class BroadcastExchangeExec[T: ClassTag](
+    mode: RowBroadcastMode,
     child: SparkPlan) extends BroadcastExchangeLike {
   import BroadcastExchangeExec._
 
   override val runId: UUID = UUID.randomUUID
 
-  override lazy val metrics = Map(
-    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
-    "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
-    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+  override lazy val metrics = if (sqlContext.conf.executorSideBroadcastEnabled) {
+      Map(
+        "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
+        "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+    } else {
+      Map(
+        "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
+        "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
+        "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
+        "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+    }
 
   override def outputPartitioning: Partitioning = BroadcastPartitioning(mode)
 
@@ -89,8 +100,81 @@ case class BroadcastExchangeExec(
   }
 
   override def runtimeStatistics: Statistics = {
-    val dataSize = metrics("dataSize").value
+    val dataSize = if (sqlContext.conf.executorSideBroadcastEnabled) {
+      Long.MaxValue
+    } else {
+      metrics("dataSize").value
+    }
     Statistics(dataSize)
+  }
+
+  // Private variable used to hold the reference of RDD created during executor-side broadcasting.
+  // If we don't keep its reference, it will be cleaned up.
+  private var childRDD: RDD[InternalRow] = null
+
+  private def executorSideBroadcast(): broadcast.Broadcast[Any] = {
+    val beforeBuild = System.nanoTime()
+    // Call persist on the RDD because we want to broadcast the RDD blocks on executors.
+    childRDD = child.execute().mapPartitionsInternal { rowIterator =>
+      rowIterator.map(_.copy())
+    }.persist(StorageLevel.MEMORY_AND_DISK)
+
+    val numOfRows = childRDD.count()
+    if (numOfRows >= MAX_BROADCAST_TABLE_ROWS) {
+      throw new SparkException(
+        s"Cannot broadcast the table with more than 512 millions rows: ${numOfRows} rows")
+    }
+
+    // Broadcast the relation on executors.
+    val beforeBroadcast = System.nanoTime()
+    longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
+
+    val broadcasted = sparkContext.broadcast[InternalRow, T](childRDD, mode)
+      .asInstanceOf[broadcast.Broadcast[Any]]
+
+    longMetric("broadcastTime") += NANOSECONDS.toMillis(System.nanoTime() - beforeBroadcast)
+    broadcasted
+  }
+
+  private def driverSideBroadcast(): broadcast.Broadcast[Any] = {
+    val beforeCollect = System.nanoTime()
+    // Use executeCollect/executeCollectIterator to avoid conversion to Scala types
+    val (numRows, input) = child.executeCollectIterator()
+    if (numRows >= MAX_BROADCAST_TABLE_ROWS) {
+      throw new SparkException(
+        s"Cannot broadcast the table over $MAX_BROADCAST_TABLE_ROWS rows: $numRows rows")
+    }
+
+    val beforeBuild = System.nanoTime()
+    longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
+
+    // Construct the relation.
+    val relation = mode.transform(input, Some(numRows))
+
+    val dataSize = relation match {
+      case map: HashedRelation =>
+        map.estimatedSize
+      case arr: Array[InternalRow] =>
+        arr.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
+      case _ =>
+        throw new SparkException("[BUG] BroadcastMode.transform returned unexpected " +
+          s"type: ${relation.getClass.getName}")
+    }
+
+    longMetric("dataSize") += dataSize
+    if (dataSize >= MAX_BROADCAST_TABLE_BYTES) {
+      throw new SparkException(
+        s"Cannot broadcast the table that is larger than 8GB: ${dataSize >> 30} GB")
+    }
+
+    val beforeBroadcast = System.nanoTime()
+    longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
+
+    // Broadcast the relation
+    val broadcasted = sparkContext.broadcast(relation)
+    longMetric("broadcastTime") += NANOSECONDS.toMillis(
+      System.nanoTime() - beforeBroadcast)
+    broadcasted
   }
 
   @transient
@@ -111,43 +195,11 @@ case class BroadcastExchangeExec(
             // Setup a job group here so later it may get cancelled by groupId if necessary.
             sparkContext.setJobGroup(runId.toString, s"broadcast exchange (runId $runId)",
               interruptOnCancel = true)
-            val beforeCollect = System.nanoTime()
-            // Use executeCollect/executeCollectIterator to avoid conversion to Scala types
-            val (numRows, input) = child.executeCollectIterator()
-            if (numRows >= MAX_BROADCAST_TABLE_ROWS) {
-              throw new SparkException(
-                s"Cannot broadcast the table over $MAX_BROADCAST_TABLE_ROWS rows: $numRows rows")
+            val broadcasted = if (sqlContext.conf.executorSideBroadcastEnabled) {
+              executorSideBroadcast()
+            } else {
+              driverSideBroadcast()
             }
-
-            val beforeBuild = System.nanoTime()
-            longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
-
-            // Construct the relation.
-            val relation = mode.transform(input, Some(numRows))
-
-            val dataSize = relation match {
-              case map: HashedRelation =>
-                map.estimatedSize
-              case arr: Array[InternalRow] =>
-                arr.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
-              case _ =>
-                throw new SparkException("[BUG] BroadcastMode.transform returned unexpected " +
-                  s"type: ${relation.getClass.getName}")
-            }
-
-            longMetric("dataSize") += dataSize
-            if (dataSize >= MAX_BROADCAST_TABLE_BYTES) {
-              throw new SparkException(
-                s"Cannot broadcast the table that is larger than 8GB: ${dataSize >> 30} GB")
-            }
-
-            val beforeBroadcast = System.nanoTime()
-            longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
-
-            // Broadcast the relation
-            val broadcasted = sparkContext.broadcast(relation)
-            longMetric("broadcastTime") += NANOSECONDS.toMillis(
-              System.nanoTime() - beforeBroadcast)
             val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
             SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
             promise.trySuccess(broadcasted)
@@ -202,6 +254,8 @@ case class BroadcastExchangeExec(
           ex)
     }
   }
+
+  override protected def otherCopyArgs: Seq[AnyRef] = Seq(implicitly[ClassTag[T]])
 }
 
 object BroadcastExchangeExec {
